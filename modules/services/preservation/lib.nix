@@ -1,4 +1,8 @@
-{ lib, ... }:
+{
+  lib,
+  config ? null,
+  ...
+}:
 rec {
   # concatenates two paths
   # inserts a "/" in between if there is none, removes one if there are two
@@ -47,6 +51,20 @@ rec {
   getAllFiles =
     stateConfig: stateConfig.files ++ (builtins.concatLists (getUserFiles stateConfig.users));
 
+  uidOf = user: toString config.users.users.${user}.uid;
+  gidOf = group: toString config.users.groups.${group}.gid;
+  ownerSpec =
+    user: group:
+    let
+      uid = uidOf user;
+      gid = gidOf group;
+    in
+    assert lib.assertMsg (
+      uid != ""
+    ) "preservation: user '${user}' has no static uid (set users.users.${user}.uid explicitly)";
+    assert lib.assertMsg (gid != "") "preservation: user '${user}' has no static gid";
+    "${uid}:${gid}";
+
   # produces shell commands for all bind mounts to run in the initrd after mount-all.
   # doing everything here means bind mounts persist through switch_root, so all paths are
   # available from the very start of stage 2.
@@ -76,11 +94,22 @@ rec {
             prefix
             dirConfig.directory
           ];
+          owner = ownerSpec dirConfig.user dirConfig.group;
+          parentOwner = ownerSpec dirConfig.parent.user dirConfig.parent.group;
         in
-        par [
-          "mkdir -p ${persistentPath}"
-          "mount --mkdir --bind ${persistentPath} ${volatilePath}"
-        ]
+        par (
+          lib.optionals dirConfig.configureParent [
+            "mkdir -p ${parentDirectory volatilePath}"
+            "chown ${parentOwner} ${parentDirectory volatilePath}"
+            "chmod ${dirConfig.parent.mode} ${parentDirectory volatilePath}"
+          ]
+          ++ [
+            "mkdir -p ${persistentPath}"
+            "chown ${owner} ${persistentPath}"
+            "chmod ${dirConfig.mode} ${persistentPath}"
+            "mount --mkdir --bind ${persistentPath} ${volatilePath}"
+          ]
+        )
       ) bindmountDirs;
 
       symlinkDirCmds = map (
